@@ -12,6 +12,7 @@ remaining tickers reuse cached values from the previous snapshot.
 from __future__ import annotations
 
 import os
+import re
 import time
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -30,10 +31,37 @@ YF_DELAY_SEC = 0.15
 FMP_DELAY_SEC = 0.25
 AV_DELAY_SEC = 12.5  # free tier ~5 req/min; stay under the limit
 
+# requests exceptions often embed the full URL including ?apikey=...
+_SECRET_QUERY_RE = re.compile(
+    r"(?i)([?&](?:apikey|api_key|access_token|token)=)([^&\s\"'<>]+)"
+)
+
 
 def _env_key(name: str) -> Optional[str]:
     val = os.environ.get(name, "").strip()
     return val or None
+
+
+def _redact(text: Any, *secrets: Optional[str]) -> str:
+    """Strip known secrets and common API-key query params from log strings."""
+    out = str(text)
+    for secret in secrets:
+        if secret and len(secret) >= 4:
+            out = out.replace(secret, "***")
+    return _SECRET_QUERY_RE.sub(r"\1***", out)
+
+
+def _safe_exc(exc: BaseException, *secrets: Optional[str]) -> str:
+    """
+    Format an exception for logs without leaking API keys.
+    HTTPError is reduced to status code (response.url often contains apikey=).
+    """
+    if isinstance(exc, requests.HTTPError) and exc.response is not None:
+        return f"HTTP {exc.response.status_code}"
+    if isinstance(exc, requests.RequestException):
+        # Avoid str(exc) — PreparedRequest URLs include query params with keys
+        return _redact(type(exc).__name__, *secrets)
+    return _redact(f"{type(exc).__name__}: {exc}", *secrets)
 
 
 def _safe_float(val: Any) -> Optional[float]:
@@ -142,7 +170,8 @@ def fetch_fmp_analysts(ticker: str, api_key: str, limit: int = FMP_ANALYST_LIMIT
         if not isinstance(data, list):
             # FMP sometimes returns {"Error Message": ...}
             if isinstance(data, dict) and data.get("Error Message"):
-                print(f"  [WARN] {ticker}: FMP error — {data['Error Message']}")
+                msg = _redact(data["Error Message"], api_key)
+                print(f"  [WARN] {ticker}: FMP error — {msg}")
             return []
 
         rows = []
@@ -162,7 +191,7 @@ def fetch_fmp_analysts(ticker: str, api_key: str, limit: int = FMP_ANALYST_LIMIT
             })
         return rows
     except Exception as e:
-        print(f"  [WARN] {ticker}: FMP failed — {e}")
+        print(f"  [WARN] {ticker}: FMP failed — {_safe_exc(e, api_key)}")
         return []
 
 
@@ -197,10 +226,10 @@ def fetch_alpha_vantage_target(ticker: str, api_key: str) -> Optional[dict]:
         data = resp.json()
         if not data or "Note" in data or "Information" in data:
             msg = data.get("Note") or data.get("Information") or "empty/rate-limited"
-            print(f"  [WARN] {ticker}: Alpha Vantage — {msg}")
+            print(f"  [WARN] {ticker}: Alpha Vantage — {_redact(msg, api_key)}")
             return None
         if "Error Message" in data:
-            print(f"  [WARN] {ticker}: Alpha Vantage — {data['Error Message']}")
+            print(f"  [WARN] {ticker}: Alpha Vantage — {_redact(data['Error Message'], api_key)}")
             return None
 
         return {
@@ -208,7 +237,7 @@ def fetch_alpha_vantage_target(ticker: str, api_key: str) -> Optional[dict]:
             "fetched_at": datetime.now(timezone.utc).isoformat(),
         }
     except Exception as e:
-        print(f"  [WARN] {ticker}: Alpha Vantage failed — {e}")
+        print(f"  [WARN] {ticker}: Alpha Vantage failed — {_safe_exc(e, api_key)}")
         return None
 
 
