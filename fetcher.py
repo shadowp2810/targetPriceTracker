@@ -15,18 +15,21 @@ import os
 import re
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Optional
 
 import requests
 import yfinance as yf
 
-# FMP v4 price-target returns named analyst rows matching:
-# analystName, analystCompany, priceTarget, adjPriceTarget, priceWhenPosted, ...
-FMP_PRICE_TARGET_URL = "https://financialmodelingprep.com/api/v4/price-target"
+# FMP stable API (legacy /api/v3 and /api/v4 return 403 for new keys)
+FMP_CONSENSUS_URL = "https://financialmodelingprep.com/stable/price-target-consensus"
+FMP_PRICE_TARGET_NEWS_URL = "https://financialmodelingprep.com/stable/price-target-news"
+FMP_GRADES_URL = "https://financialmodelingprep.com/stable/grades"
 AV_OVERVIEW_URL = "https://www.alphavantage.co/query"
 
 AV_DAILY_LIMIT = 25
 FMP_ANALYST_LIMIT = 5
+FMP_DAILY_BUDGET = 240  # free tier ~250/day; leave headroom
 YF_DELAY_SEC = 0.15
 FMP_DELAY_SEC = 0.25
 AV_DELAY_SEC = 12.5  # free tier ~5 req/min; stay under the limit
@@ -35,6 +38,28 @@ AV_DELAY_SEC = 12.5  # free tier ~5 req/min; stay under the limit
 _SECRET_QUERY_RE = re.compile(
     r"(?i)([?&](?:apikey|api_key|access_token|token)=)([^&\s\"'<>]+)"
 )
+
+
+def load_dotenv(path: str | Path = ".env") -> None:
+    """
+    Load KEY=VALUE pairs from .env into os.environ if not already set.
+    Does not override existing env vars (so GitHub Actions secrets win).
+    """
+    p = Path(path)
+    if not p.is_file():
+        return
+    try:
+        for raw in p.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, val = line.split("=", 1)
+            key = key.strip()
+            val = val.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = val
+    except Exception as e:
+        print(f"[WARN] Could not load {p}: {type(e).__name__}")
 
 
 def _env_key(name: str) -> Optional[str]:
@@ -152,28 +177,92 @@ def fetch_yfinance(ticker: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Financial Modeling Prep — named analyst targets
+# Financial Modeling Prep (stable API)
 # ---------------------------------------------------------------------------
-def fetch_fmp_analysts(ticker: str, api_key: str, limit: int = FMP_ANALYST_LIMIT) -> list[dict]:
+def _fmp_first_row(data: Any) -> dict:
+    if isinstance(data, list):
+        return data[0] if data and isinstance(data[0], dict) else {}
+    if isinstance(data, dict):
+        if data.get("Error Message") or data.get("error"):
+            return {}
+        return data
+    return {}
+
+
+def fetch_fmp_consensus(ticker: str, api_key: str) -> dict:
     """
-    Fetch the latest named analyst price-target updates for a ticker.
-    Uses FMP v4 /price-target (fields: analystName, analystCompany, priceTarget, ...).
+    Free-tier consensus targets from /stable/price-target-consensus.
+    Returns fmp_latest_target (= targetConsensus) plus high/low/median.
     """
+    empty = {
+        "fmp_latest_target": None,
+        "fmp_target_high": None,
+        "fmp_target_low": None,
+        "fmp_target_median": None,
+    }
     try:
         resp = requests.get(
-            FMP_PRICE_TARGET_URL,
+            FMP_CONSENSUS_URL,
             params={"symbol": ticker, "apikey": api_key},
             timeout=30,
         )
+        if resp.status_code == 402:
+            print(f"  [WARN] {ticker}: FMP consensus restricted under current plan")
+            return empty
+        resp.raise_for_status()
+        row = _fmp_first_row(resp.json())
+        if not row:
+            return empty
+        return {
+            "fmp_latest_target": _safe_float(row.get("targetConsensus")),
+            "fmp_target_high": _safe_float(row.get("targetHigh")),
+            "fmp_target_low": _safe_float(row.get("targetLow")),
+            "fmp_target_median": _safe_float(row.get("targetMedian")),
+        }
+    except Exception as e:
+        print(f"  [WARN] {ticker}: FMP consensus failed — {_safe_exc(e, api_key)}")
+        return empty
+
+
+def probe_fmp_price_target_news(api_key: str) -> bool:
+    """
+    One-shot check: named price-target-news is paid on many plans (HTTP 402).
+    Returns True if the endpoint returns usable rows for AAPL.
+    """
+    try:
+        resp = requests.get(
+            FMP_PRICE_TARGET_NEWS_URL,
+            params={"symbol": "AAPL", "page": 0, "limit": 1, "apikey": api_key},
+            timeout=30,
+        )
+        if resp.status_code in (401, 402, 403):
+            print(
+                "[INFO] FMP price-target-news not available on this plan — "
+                "using grades (firm + rating, no individual $ targets)"
+            )
+            return False
+        data = resp.json()
+        return isinstance(data, list) and len(data) > 0
+    except Exception:
+        return False
+
+
+def fetch_fmp_price_target_news(
+    ticker: str, api_key: str, limit: int = FMP_ANALYST_LIMIT
+) -> list[dict]:
+    """Named per-firm price targets (paid endpoint on most plans)."""
+    try:
+        resp = requests.get(
+            FMP_PRICE_TARGET_NEWS_URL,
+            params={"symbol": ticker, "page": 0, "limit": limit, "apikey": api_key},
+            timeout=30,
+        )
+        if resp.status_code in (401, 402, 403):
+            return []
         resp.raise_for_status()
         data = resp.json()
         if not isinstance(data, list):
-            # FMP sometimes returns {"Error Message": ...}
-            if isinstance(data, dict) and data.get("Error Message"):
-                msg = _redact(data["Error Message"], api_key)
-                print(f"  [WARN] {ticker}: FMP error — {msg}")
             return []
-
         rows = []
         for item in data[:limit]:
             rows.append({
@@ -181,27 +270,60 @@ def fetch_fmp_analysts(ticker: str, api_key: str, limit: int = FMP_ANALYST_LIMIT
                 "analyst_name": item.get("analystName"),
                 "analyst_company": item.get("analystCompany"),
                 "price_target": _safe_float(item.get("priceTarget")),
-                "adj_price_target": _safe_float(item.get("adjPriceTarget")),
+                "adj_price_target": _safe_float(item.get("adjPriceTarget") or item.get("priceTarget")),
                 "price_when_posted": _safe_float(item.get("priceWhenPosted")),
-                "news_url": item.get("newsURL"),
+                "news_url": item.get("newsURL") or item.get("newsUrl"),
                 "news_title": item.get("newsTitle"),
-                "news_base_url": item.get("newsBaseURL"),
-                "recommendation_key": item.get("recommendationKey"),
+                "news_base_url": item.get("newsBaseURL") or item.get("newsBaseUrl"),
+                "recommendation_key": item.get("recommendationKey") or item.get("newGrade"),
                 "date": (item.get("publishedDate") or item.get("date") or "")[:10] or None,
+                "source": "price-target-news",
             })
         return rows
     except Exception as e:
-        print(f"  [WARN] {ticker}: FMP failed — {_safe_exc(e, api_key)}")
+        print(f"  [WARN] {ticker}: FMP news failed — {_safe_exc(e, api_key)}")
         return []
 
 
-def fmp_latest_target(analysts: list[dict]) -> Optional[float]:
-    """Most recent non-null price target from the FMP analyst list."""
-    for row in analysts:
-        pt = row.get("adj_price_target") or row.get("price_target")
-        if pt is not None:
-            return pt
-    return None
+def fetch_fmp_grades(ticker: str, api_key: str, limit: int = FMP_ANALYST_LIMIT) -> list[dict]:
+    """
+    Free-tier firm grade history from /stable/grades.
+    Has firm + rating + date, but not dollar price targets.
+    """
+    try:
+        resp = requests.get(
+            FMP_GRADES_URL,
+            params={"symbol": ticker, "apikey": api_key},
+            timeout=30,
+        )
+        if resp.status_code in (401, 402, 403):
+            return []
+        resp.raise_for_status()
+        data = resp.json()
+        if not isinstance(data, list):
+            return []
+        rows = []
+        for item in data[:limit]:
+            rows.append({
+                "symbol": item.get("symbol") or ticker,
+                "analyst_name": None,
+                "analyst_company": item.get("gradingCompany"),
+                "price_target": None,
+                "adj_price_target": None,
+                "price_when_posted": None,
+                "news_url": None,
+                "news_title": None,
+                "news_base_url": None,
+                "recommendation_key": item.get("newGrade"),
+                "previous_grade": item.get("previousGrade"),
+                "action": item.get("action"),
+                "date": (item.get("date") or "")[:10] or None,
+                "source": "grades",
+            })
+        return rows
+    except Exception as e:
+        print(f"  [WARN] {ticker}: FMP grades failed — {_safe_exc(e, api_key)}")
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -285,11 +407,12 @@ def fetch_all(
     }
     and av_cache is the updated Alpha Vantage cache to persist in the snapshot.
     """
+    load_dotenv()
     fmp_key = _env_key("FMP_API_KEY")
     av_key = _env_key("ALPHA_VANTAGE_API_KEY")
 
     if not fmp_key:
-        print("[WARN] FMP_API_KEY not set — skipping named analyst fetch")
+        print("[WARN] FMP_API_KEY not set — skipping FMP fetch (add to .env or env)")
     if not av_key:
         print("[WARN] ALPHA_VANTAGE_API_KEY not set — using cache only for AV targets")
 
@@ -316,19 +439,48 @@ def fetch_all(
         results[ticker] = {"ticker": ticker, **fetch_yfinance(ticker)}
         time.sleep(YF_DELAY_SEC)
 
-    # ---- Pass 2: FMP named analysts (all tickers if key present) ----
+    # ---- Pass 2: FMP consensus (+ firm grades or paid news) ----
     if fmp_key:
-        print(f"\n--- FMP price targets ({total} tickers) ---")
+        fmp_reqs = 0
+        use_news = probe_fmp_price_target_news(fmp_key)
+        fmp_reqs += 1
+        detail_mode = "price-target-news" if use_news else "grades"
+        # Consensus for every ticker; detail rows only while under daily budget
+        detail_budget = max(0, FMP_DAILY_BUDGET - total - fmp_reqs)
+        by_mcap = sorted(
+            tickers,
+            key=lambda t: results[t].get("market_cap") or 0,
+            reverse=True,
+        )
+        detail_tickers = set(by_mcap[:detail_budget])
+
+        print(
+            f"\n--- FMP stable ({total} consensus"
+            f" + {len(detail_tickers)} {detail_mode}) ---"
+        )
         for i, ticker in enumerate(tickers, 1):
             print(f"[{i}/{total}] FMP {ticker}")
-            analysts = fetch_fmp_analysts(ticker, fmp_key)
+            consensus = fetch_fmp_consensus(ticker, fmp_key)
+            fmp_reqs += 1
+            results[ticker].update(consensus)
+
+            if ticker in detail_tickers:
+                if use_news:
+                    analysts = fetch_fmp_price_target_news(ticker, fmp_key)
+                else:
+                    analysts = fetch_fmp_grades(ticker, fmp_key)
+                fmp_reqs += 1
+            else:
+                analysts = []
             results[ticker]["fmp_analysts"] = analysts
-            results[ticker]["fmp_latest_target"] = fmp_latest_target(analysts)
+            results[ticker]["fmp_detail_source"] = detail_mode if analysts else None
             time.sleep(FMP_DELAY_SEC)
+        print(f"[INFO] FMP requests used this run: ~{fmp_reqs}")
     else:
         for ticker in tickers:
             results[ticker]["fmp_analysts"] = []
             results[ticker]["fmp_latest_target"] = None
+            results[ticker]["fmp_detail_source"] = None
 
     # ---- Pass 3: Alpha Vantage (top N by market cap, rest from cache) ----
     by_mcap = sorted(

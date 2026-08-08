@@ -32,9 +32,12 @@ def write_html(
                 "price_target": a.get("adj_price_target") or a.get("price_target"),
                 "price_when_posted": a.get("price_when_posted"),
                 "recommendation_key": a.get("recommendation_key"),
+                "previous_grade": a.get("previous_grade"),
+                "action": a.get("action"),
                 "date": a.get("date"),
                 "news_title": a.get("news_title"),
                 "news_url": a.get("news_url"),
+                "source": a.get("source"),
             })
         slim.append({
             "ticker": row.get("ticker"),
@@ -50,6 +53,9 @@ def write_html(
             "yf_target_high": row.get("yf_target_high"),
             "yf_target_low": row.get("yf_target_low"),
             "fmp_latest_target": row.get("fmp_latest_target"),
+            "fmp_target_high": row.get("fmp_target_high"),
+            "fmp_target_low": row.get("fmp_target_low"),
+            "fmp_target_median": row.get("fmp_target_median"),
             "av_target": row.get("av_target"),
             "av_from_cache": row.get("av_from_cache"),
             "av_fetched_at": row.get("av_fetched_at"),
@@ -424,17 +430,27 @@ function sortedRows() {{
 
 function analystTable(t) {{
   const rows = t.fmp_analysts || [];
-  if (!rows.length) return '<div class="muted">No named FMP analyst updates for this ticker.</div>';
-  const body = rows.map(a => `<tr>
-    <td>${{a.analyst_company || '—'}}</td>
-    <td>${{a.analyst_name || '—'}}</td>
-    <td>${{fmt.money(a.price_target)}}</td>
-    <td>${{a.date || '—'}}</td>
-    <td>${{a.recommendation_key || '—'}}</td>
-    <td>${{a.news_url ? `<a href="${{a.news_url}}" target="_blank" rel="noopener">${{a.news_title || 'link'}}</a>` : (a.news_title || '—')}}</td>
-  </tr>`).join('');
-  return `<div><strong>Named analysts (FMP, last ${{rows.length}})</strong>
-    <span class="muted"> · 52W ${{fmt.money(t.fifty_two_week_low)}} – ${{fmt.money(t.fifty_two_week_high)}} · β ${{fmt.num(t.beta)}} · vol ${{fmt.num(t.avg_volume, 0)}}</span>
+  const meta = `<span class="muted"> · FMP consensus ${{fmt.money(t.fmp_latest_target)}} (hi ${{fmt.money(t.fmp_target_high)}} / lo ${{fmt.money(t.fmp_target_low)}}) · 52W ${{fmt.money(t.fifty_two_week_low)}} – ${{fmt.money(t.fifty_two_week_high)}} · β ${{fmt.num(t.beta)}}</span>`;
+  if (!rows.length) {{
+    return `<div><strong>FMP detail</strong>${{meta}}<div class="muted" style="margin-top:8px">No firm-level FMP rows for this ticker (budget/plan limit).</div></div>`;
+  }}
+  const isGrades = rows[0].source === 'grades';
+  const title = isGrades
+    ? `Recent firm grades (FMP free tier — no individual $ targets)`
+    : `Named analyst targets (FMP)`;
+  const body = rows.map(a => {{
+    const rating = a.recommendation_key || '—';
+    const ratingExtra = a.previous_grade ? ` <span class="muted">(${{a.action || 'from'}} ${{a.previous_grade}})</span>` : '';
+    return `<tr>
+      <td>${{a.analyst_company || '—'}}</td>
+      <td>${{a.analyst_name || '—'}}</td>
+      <td>${{a.price_target != null ? fmt.money(a.price_target) : '—'}}</td>
+      <td>${{a.date || '—'}}</td>
+      <td>${{rating}}${{ratingExtra}}</td>
+      <td>${{a.news_url ? `<a href="${{a.news_url}}" target="_blank" rel="noopener">${{a.news_title || 'link'}}</a>` : (a.news_title || '—')}}</td>
+    </tr>`;
+  }}).join('');
+  return `<div><strong>${{title}}</strong>${{meta}}
     <table class="analysts">
       <thead><tr><th>Firm</th><th>Analyst</th><th>Target</th><th>Date</th><th>Rating</th><th>News</th></tr></thead>
       <tbody>${{body}}</tbody>

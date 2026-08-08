@@ -25,14 +25,19 @@ Every weekday after the US close, the pipeline:
 | Source | What we use | Limit | Key |
 |---|---|---|---|
 | **yfinance** `==1.5.2` | `currentPrice`, `targetMean/Median/High/Low`, `numberOfAnalystOpinions`, `recommendationKey`, P/E, mcap, volume, 52W, beta | None | No key |
-| **FMP** `/api/v4/price-target` | Named rows: firm, analyst, `priceTarget`, date, news link | 250 req/day | `FMP_API_KEY` |
+| **FMP** `/stable/price-target-consensus` | Consensus / high / low / median targets | 250 req/day | `FMP_API_KEY` |
+| **FMP** `/stable/grades` (free) or `/stable/price-target-news` (paid) | Firm grades, or named $-targets if plan allows | shares FMP budget | `FMP_API_KEY` |
 | **Alpha Vantage** `OVERVIEW` | `AnalystTargetPrice` (third consensus) | 25 req/day | `ALPHA_VANTAGE_API_KEY` |
+
+> **Note:** FMP legacy `/api/v3` and `/api/v4` endpoints return 403 for new keys. Named dollar price targets (`price-target-news`) require a paid FMP plan; the free tier uses consensus + firm grades instead.
 
 ### Rate-limit strategy
 
 - **yfinance** — all tickers every run
-- **FMP** — all tickers every run (~138 of 250)
+- **FMP** — consensus for all tickers; firm detail rows for as many as fit under ~240 req/day
 - **Alpha Vantage** — refresh top 25 by market cap (missing/oldest first); cache the rest inside `reports/latest_targets.json` so each ticker refreshes roughly every ~6 trading days
+
+Local runs load `FMP_API_KEY` / `ALPHA_VANTAGE_API_KEY` from a gitignored `.env` automatically (existing shell env / GitHub Secrets always win).
 
 ---
 
