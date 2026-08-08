@@ -86,27 +86,75 @@ def week_delta(current: Optional[float], previous: Optional[float]) -> Optional[
     return round(current - previous, 2)
 
 
+def firm_upside_vs_usd_price(
+    firm_target: Optional[float],
+    firm_currency: Optional[str],
+    usd_price: Optional[float],
+) -> Optional[float]:
+    """Upside vs yfinance USD price only when firm target is USD (no FX)."""
+    if firm_target is None or usd_price is None:
+        return None
+    if firm_currency and firm_currency.upper() != "USD":
+        return None
+    return upside_pct(firm_target, usd_price)
+
+
 def analyze_ticker(raw: dict, week_baseline: Optional[dict] = None) -> dict:
     """Enrich a single ticker fetch result with derived metrics."""
     price = _f(raw.get("current_price"))
     yf_mean = _f(raw.get("yf_target_mean"))
     fmp_latest = _f(raw.get("fmp_latest_target"))
     av_target = _f(raw.get("av_target"))
+    dj_target = _f(raw.get("desjardins_target"))
+    dj_currency = raw.get("desjardins_currency")
 
     target, target_source = primary_target(yf_mean, fmp_latest, av_target)
     up = upside_pct(target, price)
     div = consensus_divergence(yf_mean, fmp_latest, av_target, price)
     above_target = bool(price is not None and target is not None and price > target)
+    upside_dj = firm_upside_vs_usd_price(dj_target, dj_currency, price)
 
     baseline = week_baseline or {}
+    baseline_firms = baseline.get("firm_targets") or {}
+
+    # Enrich each firm target with upside + week delta
+    firm_targets = {}
+    for slug, ft in (raw.get("firm_targets") or {}).items():
+        ft_target = _f(ft.get("target"))
+        ft_up = firm_upside_vs_usd_price(ft_target, ft.get("currency"), price)
+        prev_t = _f((baseline_firms.get(slug) or {}).get("target"))
+        enriched = {
+            **ft,
+            "target": round(ft_target, 2) if ft_target is not None else None,
+            "upside_pct": ft_up,
+            "week_delta": week_delta(ft_target, prev_t),
+        }
+        firm_targets[slug] = enriched
+
+    # Best USD firm upside for sorting/display
+    usd_firm_upsides = [
+        (slug, ft["upside_pct"])
+        for slug, ft in firm_targets.items()
+        if ft.get("upside_pct") is not None
+    ]
+    best_firm_slug = None
+    best_firm_upside = None
+    if usd_firm_upsides:
+        best_firm_slug, best_firm_upside = max(usd_firm_upsides, key=lambda x: x[1])
+
     analyzed = {
         **raw,
+        "firm_targets": firm_targets,
+        "n_firm_targets": len(firm_targets),
+        "best_firm_slug": best_firm_slug,
+        "best_firm_upside_pct": best_firm_upside,
         "primary_target": target,
         "primary_target_source": target_source,
         "upside_pct": up,
         "upside_yf_pct": upside_pct(yf_mean, price),
         "upside_fmp_pct": upside_pct(fmp_latest, price),
         "upside_av_pct": upside_pct(av_target, price),
+        "upside_desjardins_pct": upside_dj,
         "above_target": above_target,
         "divergence_pct": div["divergence_pct"],
         "divergence_flag": div["divergence_flag"],
@@ -114,11 +162,12 @@ def analyze_ticker(raw: dict, week_baseline: Optional[dict] = None) -> dict:
         "week_delta_yf": week_delta(yf_mean, _f(baseline.get("yf_target_mean"))),
         "week_delta_fmp": week_delta(fmp_latest, _f(baseline.get("fmp_latest_target"))),
         "week_delta_av": week_delta(av_target, _f(baseline.get("av_target"))),
+        "week_delta_desjardins": week_delta(dj_target, _f(baseline.get("desjardins_target"))),
         "week_delta_upside": week_delta(up, _f(baseline.get("upside_pct"))),
     }
     # Round a few display-friendly fields
     for key in ("yf_target_mean", "yf_target_median", "yf_target_high", "yf_target_low",
-                "fmp_latest_target", "av_target", "primary_target",
+                "fmp_latest_target", "av_target", "primary_target", "desjardins_target",
                 "trailing_pe", "forward_pe", "beta",
                 "fifty_two_week_high", "fifty_two_week_low"):
         if analyzed.get(key) is not None:
@@ -155,10 +204,15 @@ def build_week_baseline(analyzed: list[dict]) -> dict[str, dict]:
     """Compact per-ticker fields stored as the next week's comparison baseline."""
     out = {}
     for row in analyzed:
+        firm_base = {}
+        for slug, ft in (row.get("firm_targets") or {}).items():
+            firm_base[slug] = {"target": ft.get("target")}
         out[row["ticker"]] = {
             "yf_target_mean": row.get("yf_target_mean"),
             "fmp_latest_target": row.get("fmp_latest_target"),
             "av_target": row.get("av_target"),
+            "desjardins_target": row.get("desjardins_target"),
+            "firm_targets": firm_base,
             "upside_pct": row.get("upside_pct"),
             "primary_target": row.get("primary_target"),
         }
@@ -171,6 +225,11 @@ def summary_stats(analyzed: list[dict]) -> dict:
     diverged = sum(1 for r in analyzed if r.get("divergence_flag"))
     with_av = sum(1 for r in analyzed if r.get("av_target") is not None)
     with_fmp = sum(1 for r in analyzed if r.get("fmp_latest_target") is not None)
+    with_dj = sum(
+        1 for r in analyzed
+        if r.get("desjardins_target") is not None or r.get("desjardins_rating")
+    )
+    with_firm = sum(1 for r in analyzed if (r.get("n_firm_targets") or 0) > 0)
     return {
         "n_tickers": len(analyzed),
         "n_with_upside": len(upsides),
@@ -180,5 +239,7 @@ def summary_stats(analyzed: list[dict]) -> dict:
         "n_divergence_flag": diverged,
         "n_with_av": with_av,
         "n_with_fmp": with_fmp,
+        "n_with_desjardins": with_dj,
+        "n_with_firm_targets": with_firm,
         "top_upside": analyzed[0]["ticker"] if analyzed and analyzed[0].get("upside_pct") is not None else None,
     }

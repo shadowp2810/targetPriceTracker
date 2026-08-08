@@ -28,6 +28,7 @@ from openpyxl.utils import get_column_letter
 from universe import get_universe
 from fetcher import fetch_all
 from analyzer import analyze_all, build_week_baseline, summary_stats
+from broker_scraper import BROKERS, broker_picks_for_dashboard
 from exporter_html import write_html
 
 # ---------------------------------------------------------------------------
@@ -234,7 +235,7 @@ def main() -> None:
         print("Week baseline: none (first run or too fresh)")
 
     print("\n--- Fetching ---")
-    fetch_results, av_cache = fetch_all(
+    fetch_results, av_cache, broker_cache = fetch_all(
         tickers,
         prev_snapshot=prev,
         av_daily_limit=args.av_limit,
@@ -243,12 +244,22 @@ def main() -> None:
     print("\n--- Analyzing ---")
     analyzed = analyze_all(fetch_results, week_baseline_by_ticker=week_baseline)
     stats = summary_stats(analyzed)
+    stats["n_brokers"] = len(BROKERS)
+    stats["broker_pick_counts"] = {
+        slug: len((payload.get("by_ticker") or {}))
+        for slug, payload in broker_cache.items()
+    }
+    # Legacy Desjardins stats for older UI bits
+    dj_payload = broker_cache.get("desjardins") or {}
+    stats["n_desjardins_picks"] = len(dj_payload.get("by_ticker") or {})
     print(
         f"Tickers: {stats['n_tickers']} | "
         f"avg upside: {stats['avg_upside_pct']}% | "
         f"above target: {stats['n_above_target']} | "
         f"divergence flags: {stats['n_divergence_flag']} | "
-        f"AV coverage: {stats['n_with_av']}"
+        f"AV coverage: {stats['n_with_av']} | "
+        f"firm coverage: {stats['n_with_firm_targets']} | "
+        f"brokers scraped: {stats['n_brokers']}"
     )
 
     # Persist / refresh week baseline
@@ -270,6 +281,9 @@ def main() -> None:
         "tickers": analyzed,
         "week_baseline": new_week_baseline,
         "av_cache": av_cache,
+        "broker_cache": broker_cache,
+        # Keep legacy key populated for older readers / mid-migration
+        "desjardins_cache": dj_payload,
         "stats": stats,
     }
 
@@ -282,6 +296,21 @@ def main() -> None:
         "week_baseline_age_days": wb_age,
         "av_coverage": stats["n_with_av"],
         "av_limit": args.av_limit,
+        "brokers": [
+            {
+                "slug": b["slug"],
+                "name": b["name"],
+                "short": b["short"],
+                "from_cache": (broker_cache.get(b["slug"]) or {}).get("from_cache"),
+                "fetched_at": (broker_cache.get(b["slug"]) or {}).get("fetched_at"),
+                "source_url": (broker_cache.get(b["slug"]) or {}).get("source_url"),
+                "n_picks": len((broker_cache.get(b["slug"]) or {}).get("by_ticker") or {}),
+            }
+            for b in BROKERS
+        ],
+        "desjardins_from_cache": dj_payload.get("from_cache"),
+        "desjardins_fetched_at": dj_payload.get("fetched_at"),
+        "desjardins_source_url": dj_payload.get("source_url"),
     }
     write_html(
         analyzed,
@@ -290,6 +319,7 @@ def main() -> None:
         iso_timestamp=iso_timestamp,
         stats=stats,
         snapshot_info=snapshot_info,
+        broker_panels=broker_picks_for_dashboard(broker_cache),
     )
     print(f"HTML dashboard: {DOCS_HTML_PATH}")
 

@@ -13,10 +13,11 @@ Same deploy pattern as [options.pranavp.dev](https://options.pranavp.dev): Pytho
 Every weekday after the US close, the pipeline:
 
 1. Fetches **yfinance** fundamentals + consensus targets for every ticker
-2. Pulls the latest **named analyst** price targets from **Financial Modeling Prep** (firm, analyst, target, date, rating)
+2. Pulls **FMP** consensus (+ firm grades on the free tier)
 3. Cross-checks with **Alpha Vantage** `AnalystTargetPrice` for the top 25 by market cap (rest served from yesterday’s cache)
-4. Computes upside %, consensus divergence, above-target flags, and **week-over-week** target deltas
-5. Writes `docs/index.html` + `reports/latest_targets.json` and pushes to GitHub Pages
+4. Scrapes sell-side firm targets from [PriceTargets.com](https://www.pricetargets.com/brokerages/) for **Morgan Stanley, Goldman Sachs, JPMorgan, RBC, Desjardins** (one page each / day)
+5. Computes upside %, consensus divergence, above-target flags, and **week-over-week** target deltas
+6. Writes `docs/index.html` + `reports/latest_targets.json` and pushes to GitHub Pages
 
 ---
 
@@ -28,14 +29,25 @@ Every weekday after the US close, the pipeline:
 | **FMP** `/stable/price-target-consensus` | Consensus / high / low / median targets | 250 req/day | `FMP_API_KEY` |
 | **FMP** `/stable/grades` (free) or `/stable/price-target-news` (paid) | Firm grades, or named $-targets if plan allows | shares FMP budget | `FMP_API_KEY` |
 | **Alpha Vantage** `OVERVIEW` | `AnalystTargetPrice` (third consensus) | 25 req/day | `ALPHA_VANTAGE_API_KEY` |
+| **Broker scrapes** (PriceTargets.com) | MS · GS · JPM · RBC · Desjardins firm targets/ratings | 1 page/broker/day | No key |
 
 > **Note:** FMP legacy `/api/v3` and `/api/v4` endpoints return 403 for new keys. Named dollar price targets (`price-target-news`) require a paid FMP plan; the free tier uses consensus + firm grades instead.
+
+### Broker scrape notes
+
+- Configured in [`broker_scraper.py`](broker_scraper.py) `BROKERS` list — add/remove firms by path slug
+- Exact ticker matches join into each row’s `firm_targets` (not folded into consensus / divergence)
+- CAD targets are not FX-converted against USD yfinance prices (firm upside stays blank for CAD)
+- Dashboard **Firm picks** panel has a tab per broker; expand a main-table row to see all matched firms
+- On scrape failure for a firm, that firm’s prior `broker_cache` entry is reused
+- Each page only shows ~100 recent ratings — we **merge** into `by_ticker` so coverage accumulates across days
 
 ### Rate-limit strategy
 
 - **yfinance** — all tickers every run
 - **FMP** — consensus for all tickers; firm detail rows for as many as fit under ~240 req/day
 - **Alpha Vantage** — refresh top 25 by market cap (missing/oldest first); cache the rest inside `reports/latest_targets.json` so each ticker refreshes roughly every ~6 trading days
+- **Broker scrapes** — one HTTP GET per configured firm (~5/day)
 
 Local runs load `FMP_API_KEY` / `ALPHA_VANTAGE_API_KEY` from a gitignored `.env` automatically (existing shell env / GitHub Secrets always win).
 
@@ -101,10 +113,12 @@ Schedule: `30 21 * * 1-5` (9:30 PM UTC ≈ 4:30 PM ET). Manual runs: **Actions �
 |---|---|
 | `main.py` | Orchestrates fetch → analyze → export; manages snapshots |
 | `universe.py` | S&P 500 IT + Nasdaq-100 ticker list |
-| `fetcher.py` | yfinance + FMP + Alpha Vantage (AV rate-limit + cache) |
+| `fetcher.py` | yfinance + FMP + Alpha Vantage + broker scrapes |
+| `broker_scraper.py` | PriceTargets.com multi-broker scrape + cache |
+| `desjardins_fetcher.py` | Thin shim around `broker_scraper` (compat) |
 | `analyzer.py` | Upside %, divergence, above-target, weekly deltas, ranking |
 | `exporter_html.py` | Self-contained HTML + Chart.js + embedded JSON |
-| `reports/latest_targets.json` | Weekday snapshot (AV cache + week baseline) |
+| `reports/latest_targets.json` | Weekday snapshot (AV + broker caches + week baseline) |
 | `docs/index.html` | GitHub Pages entry |
 
 ---
@@ -115,16 +129,18 @@ Schedule: `30 21 * * 1-5` (9:30 PM UTC ≈ 4:30 PM ET). Manual runs: **Actions �
 
 - `tickers` — full analyzed rows for the dashboard
 - `av_cache` — Alpha Vantage targets + `fetched_at` for cache reuse
-- `week_baseline` — compact per-ticker targets refreshed every ~7 days; UI columns `YF Δwk` / FMP / AV compare against this baseline
+- `broker_cache` — per-firm scraped rows + `by_ticker` maps (MS/GS/JPM/RBC/Desjardins)
+- `week_baseline` — compact per-ticker targets refreshed every ~7 days
 
 ---
 
 ## Dashboard features
 
-- Sortable / filterable table (ticker, recommendation, above-target, divergence, upside &gt; 0)
+- Sortable / filterable table (ticker, recommendation, above-target, divergence, upside &gt; 0, Has firm target)
 - Upside % = `(target − price) / price`
 - Consensus columns: yfinance mean · FMP latest · Alpha Vantage
+- Firm columns: `# Firms` + best USD firm upside (expand row for MS/GS/JPM/RBC/DJ detail)
+- Firm picks panel with per-broker tabs
 - Divergence flag when sources disagree by ≥ 10% of their midpoint
-- Expand a row for the named FMP analyst table (firm, analyst, target, date, rating, news)
 - Fundamentals alongside targets: P/E, forward P/E, market cap, volume, 52W, beta, recommendation
 - Chart.js bar chart of upside for the current filtered view

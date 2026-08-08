@@ -21,6 +21,12 @@ from typing import Any, Optional
 import requests
 import yfinance as yf
 
+from broker_scraper import (
+    BROKERS,
+    attach_brokers_to_results,
+    fetch_all_brokers,
+)
+
 # FMP stable API (legacy /api/v3 and /api/v4 return 403 for new keys)
 FMP_CONSENSUS_URL = "https://financialmodelingprep.com/stable/price-target-consensus"
 FMP_PRICE_TARGET_NEWS_URL = "https://financialmodelingprep.com/stable/price-target-news"
@@ -393,19 +399,16 @@ def fetch_all(
     tickers: list[str],
     prev_snapshot: Optional[dict] = None,
     av_daily_limit: int = AV_DAILY_LIMIT,
-) -> tuple[dict[str, dict], dict[str, dict]]:
+) -> tuple[dict[str, dict], dict[str, dict], dict[str, dict]]:
     """
-    Fetch all three sources for every ticker.
+    Fetch yfinance, FMP, Alpha Vantage, and PriceTargets broker scrapes.
 
-    Returns (results, av_cache) where results maps ticker -> {
+    Returns (results, av_cache, broker_cache) where results maps ticker -> {
         ...yfinance fields...,
-        "fmp_analysts": [...],
-        "fmp_latest_target": float|None,
-        "av_target": float|None,
-        "av_fetched_at": str|None,
-        "av_from_cache": bool,
+        "fmp_*", "av_*",
+        "firm_targets": {slug: {target, rating, ...}},
+        "desjardins_*": legacy mirror of firm_targets['desjardins'],
     }
-    and av_cache is the updated Alpha Vantage cache to persist in the snapshot.
     """
     load_dotenv()
     fmp_key = _env_key("FMP_API_KEY")
@@ -506,4 +509,14 @@ def fetch_all(
         results[ticker]["av_fetched_at"] = cached.get("fetched_at")
         results[ticker]["av_from_cache"] = ticker not in refreshed
 
-    return results, av_cache
+    # ---- Pass 4: sell-side firm scrapes (one page each) ----
+    broker_cache = fetch_all_brokers(prev_snapshot=prev_snapshot)
+    match_counts = attach_brokers_to_results(results, broker_cache)
+    for broker in BROKERS:
+        slug = broker["slug"]
+        print(
+            f"[INFO] {broker['name']} exact matches in universe: "
+            f"{match_counts.get(slug, 0)}/{total}"
+        )
+
+    return results, av_cache, broker_cache
