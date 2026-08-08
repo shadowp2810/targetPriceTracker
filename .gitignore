@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+keys.env
+*.env
+.venv/
+venv/
+
+# Keep the weekly snapshot; ignore dated/local exports
+reports/*
+!reports/latest_targets.json
+!reports/.gitkeep
+
+# docs/ is intentionally tracked (CNAME + deployed index.html)
+!docs/

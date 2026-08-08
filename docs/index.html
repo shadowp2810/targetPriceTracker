@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Stock Price Target Tracker</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #22263a;
+    --border: #2e3250;
+    --accent: #4f7ef8;
+    --green: #22c55e;
+    --green-bg: #052e16;
+    --red: #ef4444;
+    --red-bg: #2d0b0b;
+    --yellow: #f59e0b;
+    --yellow-bg: #2c1f06;
+    --text: #e2e8f0;
+    --text-muted: #94a3b8;
+    --text-dim: #64748b;
+    --radius: 10px;
+    --font: 'IBM Plex Sans', 'Segoe UI', system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 13px;
+    min-height: 100vh;
+  }
+  .header {
+    background: linear-gradient(135deg, #1a1d27 0%, #0f1117 55%, #12182a 100%);
+    border-bottom: 1px solid var(--border);
+    padding: 28px 28px 22px;
+  }
+  .header h1 {
+    font-size: 1.55rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    margin-bottom: 6px;
+  }
+  .header .sub {
+    color: var(--text-muted);
+    font-size: 0.92rem;
+  }
+  .header .meta {
+    margin-top: 10px;
+    color: var(--text-dim);
+    font-size: 0.8rem;
+  }
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 12px;
+    padding: 18px 28px;
+  }
+  .stat {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px 16px;
+  }
+  .stat .label { color: var(--text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; }
+  .stat .value { font-size: 1.35rem; font-weight: 700; margin-top: 4px; }
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+    padding: 0 28px 14px;
+  }
+  .controls input, .controls select {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 8px;
+    padding: 8px 12px;
+    font: inherit;
+  }
+  .controls input { min-width: 220px; }
+  .controls label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-muted);
+    cursor: pointer;
+    user-select: none;
+  }
+  .chart-wrap {
+    margin: 0 28px 18px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px;
+    height: 220px;
+  }
+  .table-wrap {
+    margin: 0 28px 40px;
+    overflow-x: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    min-width: 1100px;
+  }
+  th, td {
+    padding: 9px 10px;
+    border-bottom: 1px solid var(--border);
+    text-align: right;
+    white-space: nowrap;
+  }
+  th {
+    position: sticky;
+    top: 0;
+    background: var(--surface2);
+    color: var(--text-muted);
+    font-weight: 600;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    cursor: pointer;
+    user-select: none;
+  }
+  th:hover { color: var(--text); }
+  th.sorted-asc::after { content: " ▲"; color: var(--accent); }
+  th.sorted-desc::after { content: " ▼"; color: var(--accent); }
+  td:first-child, th:first-child,
+  td:nth-child(2), th:nth-child(2) { text-align: left; }
+  tr:hover td { background: rgba(79, 126, 248, 0.06); }
+  tr.expandable { cursor: pointer; }
+  tr.detail-row td {
+    background: #141824;
+    text-align: left;
+    white-space: normal;
+    padding: 14px 16px;
+  }
+  .ticker { font-weight: 700; color: var(--accent); }
+  .name { color: var(--text-dim); font-size: 0.78rem; }
+  .pos { color: var(--green); font-weight: 600; }
+  .neg { color: var(--red); font-weight: 600; }
+  .flag {
+    display: inline-block;
+    padding: 2px 7px;
+    border-radius: 999px;
+    font-size: 0.7rem;
+    font-weight: 700;
+    background: var(--yellow-bg);
+    color: var(--yellow);
+  }
+  .badge {
+    display: inline-block;
+    padding: 2px 7px;
+    border-radius: 6px;
+    font-size: 0.7rem;
+    background: var(--surface2);
+    color: var(--text-muted);
+  }
+  .badge.cache { color: var(--text-dim); }
+  .analysts {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 8px;
+  }
+  .analysts th, .analysts td {
+    text-align: left;
+    font-size: 0.8rem;
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  .muted { color: var(--text-dim); }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  @media (max-width: 700px) {
+    .header, .stats, .controls, .chart-wrap, .table-wrap { margin-left: 12px; margin-right: 12px; padding-left: 12px; padding-right: 12px; }
+    .header { margin: 0; padding: 20px 16px; }
+    .stats { padding: 14px 16px; margin: 0; }
+    .controls { padding: 0 16px 14px; margin: 0; }
+  }
+</style>
+</head>
+<body>
+  <header class="header">
+    <h1>Stock Price Target Tracker</h1>
+    <div class="sub">12-month analyst targets · yfinance · FMP · Alpha Vantage · weekly change tracking</div>
+    <div class="meta">Generated 2026-08-08 00:20 ET · Week deltas no prior week baseline · <a href="https://targets.pranavp.dev">targets.pranavp.dev</a></div>
+  </header>
+
+  <section class="stats" id="stats"></section>
+
+  <section class="controls">
+    <input type="search" id="search" placeholder="Filter ticker or name…" />
+    <select id="recFilter">
+      <option value="">All recommendations</option>
+      <option value="strong_buy">Strong Buy</option>
+      <option value="buy">Buy</option>
+      <option value="hold">Hold</option>
+      <option value="underperform">Underperform</option>
+      <option value="sell">Sell</option>
+    </select>
+    <label><input type="checkbox" id="aboveOnly" /> Above target only</label>
+    <label><input type="checkbox" id="divOnly" /> Divergence flagged</label>
+    <label><input type="checkbox" id="positiveOnly" /> Upside &gt; 0</label>
+  </section>
+
+  <div class="chart-wrap">
+    <canvas id="upsideChart"></canvas>
+  </div>
+
+  <div class="table-wrap">
+    <table id="mainTable">
+      <thead>
+        <tr>
+          <th data-key="rank">#</th>
+          <th data-key="ticker">Ticker</th>
+          <th data-key="current_price">Price</th>
+          <th data-key="primary_target">Target</th>
+          <th data-key="upside_pct">Upside %</th>
+          <th data-key="yf_target_mean">YF Mean</th>
+          <th data-key="fmp_latest_target">FMP</th>
+          <th data-key="av_target">AV</th>
+          <th data-key="divergence_pct">Div %</th>
+          <th data-key="week_delta_yf">YF Δwk</th>
+          <th data-key="trailing_pe">P/E</th>
+          <th data-key="forward_pe">Fwd P/E</th>
+          <th data-key="market_cap">Mkt Cap</th>
+          <th data-key="recommendation_key">Rec</th>
+        </tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+
+<script>
+const DATA = {"generated": "2026-08-08 00:20 ET", "iso_timestamp": "2026-08-08T00:20:19.986682-04:00", "stats": {"n_tickers": 2, "n_with_upside": 2, "avg_upside_pct": 7.85, "median_upside_pct": 12.67, "n_above_target": 0, "n_divergence_flag": 0, "n_with_av": 0, "n_with_fmp": 0, "top_upside": "MSFT"}, "snapshot_info": {"week_baseline_generated": null, "week_baseline_age_days": null, "av_coverage": 0, "av_limit": 0}, "tickers": [{"ticker": "MSFT", "name": "Microsoft Corporation", "sector": "Technology", "industry": "Software - Infrastructure", "current_price": 499.99, "primary_target": 563.35, "primary_target_source": "yfinance", "upside_pct": 12.67, "yf_target_mean": 563.35, "yf_target_median": 550.0, "yf_target_high": 870.0, "yf_target_low": 400.0, "fmp_latest_target": null, "av_target": null, "av_from_cache": true, "av_fetched_at": null, "n_analysts": 53, "recommendation_key": "strong_buy", "trailing_pe": 27.87, "forward_pe": 21.3, "market_cap": 3712698548224.0, "avg_volume": 41354858, "fifty_two_week_high": 553.72, "fifty_two_week_low": 349.2, "beta": 1.1, "above_target": false, "divergence_pct": null, "divergence_flag": false, "week_delta_yf": null, "week_delta_fmp": null, "week_delta_av": null, "week_delta_upside": null, "rank": 1, "fmp_analysts": []}, {"ticker": "AAPL", "name": "Apple Inc.", "sector": "Technology", "industry": "Consumer Electronics", "current_price": 313.33, "primary_target": 322.82, "primary_target_source": "yfinance", "upside_pct": 3.03, "yf_target_mean": 322.82, "yf_target_median": 330.0, "yf_target_high": 400.0, "yf_target_low": 215.0, "fmp_latest_target": null, "av_target": null, "av_from_cache": true, "av_fetched_at": null, "n_analysts": 41, "recommendation_key": "buy", "trailing_pe": 35.93, "forward_pe": 32.94, "market_cap": 4572794322944.0, "avg_volume": 56809803, "fifty_two_week_high": 344.57, "fifty_two_week_low": 223.78, "beta": 1.09, "above_target": false, "divergence_pct": null, "divergence_flag": false, "week_delta_yf": null, "week_delta_fmp": null, "week_delta_av": null, "week_delta_upside": null, "rank": 2, "fmp_analysts": []}]};
+
+const fmt = {
+  num(v, d=2) {
+    if (v === null || v === undefined || v === '') return '—';
+    return Number(v).toLocaleString(undefined, { maximumFractionDigits: d, minimumFractionDigits: 0 });
+  },
+  pct(v) {
+    if (v === null || v === undefined || v === '') return '—';
+    const n = Number(v);
+    const cls = n > 0 ? 'pos' : (n < 0 ? 'neg' : '');
+    return `<span class="${cls}">${n > 0 ? '+' : ''}${n.toFixed(2)}%</span>`;
+  },
+  money(v) {
+    if (v === null || v === undefined || v === '') return '—';
+    return '$' + Number(v).toLocaleString(undefined, { maximumFractionDigits: 2 });
+  },
+  mcap(v) {
+    if (v === null || v === undefined || v === '') return '—';
+    const n = Number(v);
+    if (n >= 1e12) return '$' + (n/1e12).toFixed(2) + 'T';
+    if (n >= 1e9) return '$' + (n/1e9).toFixed(1) + 'B';
+    if (n >= 1e6) return '$' + (n/1e6).toFixed(0) + 'M';
+    return '$' + n.toLocaleString();
+  },
+  delta(v) {
+    if (v === null || v === undefined || v === '') return '—';
+    const n = Number(v);
+    const cls = n > 0 ? 'pos' : (n < 0 ? 'neg' : '');
+    return `<span class="${cls}">${n > 0 ? '+' : ''}${n.toFixed(2)}</span>`;
+  },
+};
+
+function renderStats() {
+  const s = DATA.stats || {};
+  const items = [
+    ['Tickers', s.n_tickers ?? DATA.tickers.length],
+    ['Avg Upside', s.avg_upside_pct != null ? s.avg_upside_pct + '%' : '—'],
+    ['Median Upside', s.median_upside_pct != null ? s.median_upside_pct + '%' : '—'],
+    ['Above Target', s.n_above_target ?? 0],
+    ['Divergence Flags', s.n_divergence_flag ?? 0],
+    ['AV Coverage', `${s.n_with_av ?? 0} / ${DATA.tickers.length}`],
+  ];
+  document.getElementById('stats').innerHTML = items.map(([label, value]) =>
+    `<div class="stat"><div class="label">${label}</div><div class="value">${value}</div></div>`
+  ).join('');
+}
+
+let sortKey = 'upside_pct';
+let sortDir = 'desc';
+let expanded = new Set();
+
+function filtered() {
+  const q = document.getElementById('search').value.trim().toLowerCase();
+  const rec = document.getElementById('recFilter').value;
+  const aboveOnly = document.getElementById('aboveOnly').checked;
+  const divOnly = document.getElementById('divOnly').checked;
+  const positiveOnly = document.getElementById('positiveOnly').checked;
+
+  return DATA.tickers.filter(t => {
+    if (q && !(t.ticker || '').toLowerCase().includes(q) && !(t.name || '').toLowerCase().includes(q)) return false;
+    if (rec && (t.recommendation_key || '') !== rec) return false;
+    if (aboveOnly && !t.above_target) return false;
+    if (divOnly && !t.divergence_flag) return false;
+    if (positiveOnly && !(t.upside_pct > 0)) return false;
+    return true;
+  });
+}
+
+function sortedRows() {
+  const rows = filtered().slice();
+  rows.sort((a, b) => {
+    const av = a[sortKey], bv = b[sortKey];
+    const aNull = av === null || av === undefined || av === '';
+    const bNull = bv === null || bv === undefined || bv === '';
+    if (aNull && bNull) return 0;
+    if (aNull) return 1;
+    if (bNull) return -1;
+    if (typeof av === 'string' || typeof bv === 'string') {
+      const cmp = String(av).localeCompare(String(bv));
+      return sortDir === 'asc' ? cmp : -cmp;
+    }
+    const cmp = Number(av) - Number(bv);
+    return sortDir === 'asc' ? cmp : -cmp;
+  });
+  return rows;
+}
+
+function analystTable(t) {
+  const rows = t.fmp_analysts || [];
+  if (!rows.length) return '<div class="muted">No named FMP analyst updates for this ticker.</div>';
+  const body = rows.map(a => `<tr>
+    <td>${a.analyst_company || '—'}</td>
+    <td>${a.analyst_name || '—'}</td>
+    <td>${fmt.money(a.price_target)}</td>
+    <td>${a.date || '—'}</td>
+    <td>${a.recommendation_key || '—'}</td>
+    <td>${a.news_url ? `<a href="${a.news_url}" target="_blank" rel="noopener">${a.news_title || 'link'}</a>` : (a.news_title || '—')}</td>
+  </tr>`).join('');
+  return `<div><strong>Named analysts (FMP, last ${rows.length})</strong>
+    <span class="muted"> · 52W ${fmt.money(t.fifty_two_week_low)} – ${fmt.money(t.fifty_two_week_high)} · β ${fmt.num(t.beta)} · vol ${fmt.num(t.avg_volume, 0)}</span>
+    <table class="analysts">
+      <thead><tr><th>Firm</th><th>Analyst</th><th>Target</th><th>Date</th><th>Rating</th><th>News</th></tr></thead>
+      <tbody>${body}</tbody>
+    </table>
+  </div>`;
+}
+
+function renderTable() {
+  const tbody = document.getElementById('tbody');
+  const rows = sortedRows();
+  document.querySelectorAll('th').forEach(th => {
+    th.classList.remove('sorted-asc', 'sorted-desc');
+    if (th.dataset.key === sortKey) th.classList.add(sortDir === 'asc' ? 'sorted-asc' : 'sorted-desc');
+  });
+
+  tbody.innerHTML = rows.map(t => {
+    const flags = [];
+    if (t.above_target) flags.push('<span class="flag">above target</span>');
+    if (t.divergence_flag) flags.push('<span class="flag">divergence</span>');
+    const avBadge = t.av_from_cache ? '<span class="badge cache" title="cached from prior AV fetch">cache</span>' : '';
+    const open = expanded.has(t.ticker);
+    return `<tr class="expandable" data-ticker="${t.ticker}">
+      <td>${t.rank ?? ''}</td>
+      <td><div class="ticker">${t.ticker}</div><div class="name">${t.name || ''}</div>${flags.join(' ')}</td>
+      <td>${fmt.money(t.current_price)}</td>
+      <td>${fmt.money(t.primary_target)} <span class="badge">${t.primary_target_source || ''}</span></td>
+      <td>${fmt.pct(t.upside_pct)}</td>
+      <td>${fmt.money(t.yf_target_mean)}</td>
+      <td>${fmt.money(t.fmp_latest_target)}</td>
+      <td>${fmt.money(t.av_target)} ${avBadge}</td>
+      <td>${t.divergence_pct != null ? fmt.num(t.divergence_pct) + '%' : '—'}</td>
+      <td>${fmt.delta(t.week_delta_yf)}</td>
+      <td>${fmt.num(t.trailing_pe)}</td>
+      <td>${fmt.num(t.forward_pe)}</td>
+      <td>${fmt.mcap(t.market_cap)}</td>
+      <td>${t.recommendation_key || '—'}</td>
+    </tr>
+    <tr class="detail-row" style="display:${open ? 'table-row' : 'none'}" data-detail="${t.ticker}">
+      <td colspan="14">${analystTable(t)}</td>
+    </tr>`;
+  }).join('');
+}
+
+function renderChart() {
+  const rows = sortedRows().filter(t => t.upside_pct != null).slice(0, 30);
+  const ctx = document.getElementById('upsideChart');
+  if (window._chart) window._chart.destroy();
+  window._chart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: rows.map(t => t.ticker),
+      datasets: [{
+        label: 'Upside %',
+        data: rows.map(t => t.upside_pct),
+        backgroundColor: rows.map(t => t.upside_pct >= 0 ? 'rgba(34,197,94,0.7)' : 'rgba(239,68,68,0.7)'),
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        title: { display: true, text: 'Top upside (filtered view, max 30)', color: '#94a3b8', font: { size: 12 } },
+      },
+      scales: {
+        x: { ticks: { color: '#64748b', maxRotation: 90 }, grid: { color: '#2e3250' } },
+        y: { ticks: { color: '#64748b' }, grid: { color: '#2e3250' } },
+      },
+    },
+  });
+}
+
+function refresh() {
+  renderTable();
+  renderChart();
+}
+
+document.querySelectorAll('th[data-key]').forEach(th => {
+  th.addEventListener('click', () => {
+    const key = th.dataset.key;
+    if (sortKey === key) sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+    else { sortKey = key; sortDir = key === 'ticker' ? 'asc' : 'desc'; }
+    refresh();
+  });
+});
+
+document.getElementById('tbody').addEventListener('click', (e) => {
+  const tr = e.target.closest('tr.expandable');
+  if (!tr) return;
+  const ticker = tr.dataset.ticker;
+  if (expanded.has(ticker)) expanded.delete(ticker);
+  else expanded.add(ticker);
+  const detail = document.querySelector(`tr[data-detail="${ticker}"]`);
+  if (detail) detail.style.display = expanded.has(ticker) ? 'table-row' : 'none';
+});
+
+['search', 'recFilter', 'aboveOnly', 'divOnly', 'positiveOnly'].forEach(id => {
+  document.getElementById(id).addEventListener('input', refresh);
+  document.getElementById(id).addEventListener('change', refresh);
+});
+
+renderStats();
+refresh();
+</script>
+</body>
+</html>
