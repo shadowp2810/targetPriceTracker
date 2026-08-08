@@ -32,10 +32,17 @@ NASDAQ_100 = [
     "ALGN", "CDW", "HOLX", "MTCH", "SWKS", "INCY", "PDD", "NET",
 ]
 
+# ---------------------------------------------------------------------------
+# Others — S&P 500
+# ---------------------------------------------------------------------------
+OtherStocks = [
+    "PNG.V",
+]
+
 
 def get_universe() -> list[str]:
     """Return deduplicated US tickers (S&P 500 IT + Nasdaq-100), sorted."""
-    return sorted(set(SP500_IT + NASDAQ_100))
+    return sorted(set(SP500_IT + NASDAQ_100 + OtherStocks))
 
 
 if __name__ == "__main__":
