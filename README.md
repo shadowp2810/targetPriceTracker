@@ -114,7 +114,7 @@ Schedule: `30 21 * * 1-5` (9:30 PM UTC ≈ 4:30 PM ET). Manual runs: **Actions �
 | `main.py` | Orchestrates fetch → analyze → export; manages snapshots |
 | `universe.py` | S&P 500 IT + Nasdaq-100 ticker list |
 | `fetcher.py` | yfinance + FMP + Alpha Vantage + broker scrapes |
-| `broker_scraper.py` | PriceTargets.com multi-broker scrape + cache |
+| `chart_data.py` | Weekly prices, target history, earnings dates for expand charts |
 | `desjardins_fetcher.py` | Thin shim around `broker_scraper` (compat) |
 | `analyzer.py` | Upside %, divergence, above-target, weekly deltas, ranking |
 | `exporter_html.py` | Self-contained HTML + Chart.js + embedded JSON |

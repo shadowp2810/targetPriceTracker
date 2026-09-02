@@ -29,6 +29,15 @@ from universe import get_universe
 from fetcher import fetch_all
 from analyzer import analyze_all, build_week_baseline, summary_stats
 from broker_scraper import BROKERS, broker_picks_for_dashboard
+from chart_data import (
+    attach_charts,
+    build_firm_charts,
+    build_firm_fundamentals,
+    enrich_broker_panels,
+    fetch_earnings_dates,
+    fetch_weekly_prices,
+    update_target_history,
+)
 from exporter_html import write_html
 
 # ---------------------------------------------------------------------------
@@ -243,6 +252,37 @@ def main() -> None:
 
     print("\n--- Analyzing ---")
     analyzed = analyze_all(fetch_results, week_baseline_by_ticker=week_baseline)
+
+    print("\n--- Chart series (price / target history / earnings) ---")
+    prices = fetch_weekly_prices(tickers)
+    prev_chart = (prev or {}).get("chart_history") or {}
+    earnings = fetch_earnings_dates(tickers, prev_chart=prev_chart)
+    target_hist = update_target_history(analyzed, prev_chart, iso_timestamp)
+    chart_history = attach_charts(analyzed, prices, target_hist, earnings, as_of=iso_timestamp)
+    n_charts = sum(1 for r in analyzed if (r.get("chart") or {}).get("prices"))
+    print(f"[INFO] Charts attached: {n_charts}/{len(analyzed)}")
+
+    universe_set = {r["ticker"] for r in analyzed}
+    prev_firm_charts = (prev or {}).get("firm_charts") or {}
+    firm_charts = build_firm_charts(
+        broker_cache,
+        universe_set,
+        iso_timestamp,
+        prev_firm_charts=prev_firm_charts,
+    )
+
+    print("\n--- Firm fundamentals (P/E · Fwd P/E · mkt cap) ---")
+    firm_fundamentals = build_firm_fundamentals(
+        broker_cache,
+        analyzed,
+        firm_charts=firm_charts,
+        prev_fundamentals=(prev or {}).get("firm_fundamentals") or {},
+    )
+    broker_panels = enrich_broker_panels(
+        broker_picks_for_dashboard(broker_cache),
+        firm_fundamentals,
+    )
+
     stats = summary_stats(analyzed)
     stats["n_brokers"] = len(BROKERS)
     stats["broker_pick_counts"] = {
@@ -282,6 +322,9 @@ def main() -> None:
         "week_baseline": new_week_baseline,
         "av_cache": av_cache,
         "broker_cache": broker_cache,
+        "chart_history": chart_history,
+        "firm_charts": firm_charts,
+        "firm_fundamentals": firm_fundamentals,
         # Keep legacy key populated for older readers / mid-migration
         "desjardins_cache": dj_payload,
         "stats": stats,
@@ -319,7 +362,8 @@ def main() -> None:
         iso_timestamp=iso_timestamp,
         stats=stats,
         snapshot_info=snapshot_info,
-        broker_panels=broker_picks_for_dashboard(broker_cache),
+        broker_panels=broker_panels,
+        firm_charts=firm_charts,
     )
     print(f"HTML dashboard: {DOCS_HTML_PATH}")
 

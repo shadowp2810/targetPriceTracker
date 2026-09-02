@@ -19,10 +19,12 @@ def write_html(
     snapshot_info: Optional[dict] = None,
     broker_panels: Optional[list] = None,
     desjardins_picks: Optional[list] = None,  # legacy unused
+    firm_charts: Optional[dict] = None,
 ) -> None:
     stats = stats or {}
     snapshot_info = snapshot_info or {}
     broker_panels = broker_panels or []
+    firm_charts = firm_charts or {}
     # Compat: if only legacy desjardins_picks passed
     if not broker_panels and desjardins_picks:
         broker_panels = [{
@@ -114,7 +116,24 @@ def write_html(
             "week_delta_upside": row.get("week_delta_upside"),
             "rank": row.get("rank"),
             "fmp_analysts": analysts,
+            "chart": row.get("chart") or {"prices": [], "targets": [], "earnings": []},
         })
+
+    # Firm-pick charts for tickers outside the main universe (slim: drop empty)
+    firm_charts_slim = {}
+    for tk, ch in firm_charts.items():
+        if not isinstance(ch, dict):
+            continue
+        prices = ch.get("prices") or []
+        targets = ch.get("targets") or []
+        if not prices and not targets:
+            continue
+        firm_charts_slim[tk] = {
+            "prices": prices,
+            "targets": targets,
+            "earnings": ch.get("earnings") or [],
+            "next_earnings": ch.get("next_earnings"),
+        }
 
     data_payload = json.dumps(
         {
@@ -124,6 +143,7 @@ def write_html(
             "snapshot_info": snapshot_info,
             "tickers": slim,
             "broker_panels": broker_panels,
+            "firm_charts": firm_charts_slim,
         },
         default=str,
     )
@@ -145,6 +165,7 @@ def write_html(
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Stock Price Target Tracker</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js"></script>
 <style>
   :root {{
     --bg: #0f1117;
@@ -231,20 +252,42 @@ def write_html(
     user-select: none;
   }}
   .chart-wrap {{
-    margin: 0 28px 18px;
+    margin: 0 28px 14px;
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    padding: 16px;
-    height: 220px;
+    padding: 12px 16px;
+    height: 160px;
   }}
   .table-wrap {{
-    margin: 0 28px 40px;
+    margin: 0 28px 20px;
     overflow-x: auto;
     border: 1px solid var(--border);
     border-radius: var(--radius);
     background: var(--surface);
   }}
+  /* Main universe table: ~7 data rows visible, scroll for the rest */
+  .table-wrap.main-scroll {{
+    max-height: calc(2.6rem + 7 * 3.05rem);
+    overflow-y: auto;
+    margin-bottom: 8px;
+  }}
+  .table-wrap.main-scroll thead th {{
+    z-index: 2;
+    box-shadow: 0 1px 0 var(--border);
+  }}
+  .table-hint {{
+    margin: 0 28px 18px;
+    color: var(--text-dim);
+    font-size: 0.78rem;
+  }}
+  .jump-link {{
+    margin-left: auto;
+    color: var(--accent);
+    font-size: 0.85rem;
+    text-decoration: none;
+  }}
+  .jump-link:hover {{ text-decoration: underline; }}
   table {{
     width: 100%;
     border-collapse: collapse;
@@ -280,6 +323,23 @@ def write_html(
     text-align: left;
     white-space: normal;
     padding: 14px 16px;
+  }}
+  .detail-chart-wrap {{
+    height: 240px;
+    margin: 0 0 14px;
+    background: #10131c;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 12px;
+  }}
+  .detail-chart-title {{
+    font-weight: 700;
+    margin-bottom: 6px;
+  }}
+  .detail-chart-sub {{
+    color: var(--text-dim);
+    font-size: 0.78rem;
+    margin-bottom: 8px;
   }}
   .ticker {{ font-weight: 700; color: var(--accent); }}
   .name {{ color: var(--text-dim); font-size: 0.78rem; }}
@@ -327,7 +387,7 @@ def write_html(
     color: var(--text-muted);
     font-size: 0.85rem;
   }}
-  #brokerTable {{ min-width: 900px; }}
+  #brokerTable {{ min-width: 1100px; }}
   .tabs {{
     display: flex;
     flex-wrap: wrap;
@@ -349,7 +409,7 @@ def write_html(
     background: var(--surface2);
   }}
   @media (max-width: 700px) {{
-    .header, .stats, .controls, .chart-wrap, .table-wrap, .section-title, .section-sub, .tabs {{ margin-left: 12px; margin-right: 12px; padding-left: 12px; padding-right: 12px; }}
+    .header, .stats, .controls, .chart-wrap, .table-wrap, .section-title, .section-sub, .tabs, .table-hint {{ margin-left: 12px; margin-right: 12px; padding-left: 12px; padding-right: 12px; }}
     .header {{ margin: 0; padding: 20px 16px; }}
     .stats {{ padding: 14px 16px; margin: 0; }}
     .controls {{ padding: 0 16px 14px; margin: 0; }}
@@ -379,13 +439,14 @@ def write_html(
     <label><input type="checkbox" id="divOnly" /> Divergence flagged</label>
     <label><input type="checkbox" id="positiveOnly" /> Upside &gt; 0</label>
     <label><input type="checkbox" id="firmOnly" /> Has firm target</label>
+    <a class="jump-link" href="#firm-picks">Firm picks ↓</a>
   </section>
 
   <div class="chart-wrap">
     <canvas id="upsideChart"></canvas>
   </div>
 
-  <div class="table-wrap">
+  <div class="table-wrap main-scroll">
     <table id="mainTable">
       <thead>
         <tr>
@@ -410,9 +471,10 @@ def write_html(
       <tbody id="tbody"></tbody>
     </table>
   </div>
+  <p class="table-hint">Showing 7 rows — scroll inside the table for the full universe.</p>
 
-  <h2 class="section-title">Firm picks</h2>
-  <p class="section-sub">Sell-side recommendations scraped from PriceTargets.com (MS · GS · JPM · RBC · Desjardins). Exact ticker matches also show under each row’s expand view.</p>
+  <h2 class="section-title" id="firm-picks">Firm picks</h2>
+  <p class="section-sub">Sell-side recommendations scraped from PriceTargets.com (MS · GS · JPM · RBC · Desjardins). Click a row for the price vs target chart. P/E · Fwd P/E · mkt cap from Yahoo.</p>
   <div class="tabs" id="brokerTabs"></div>
   <div class="table-wrap">
     <table id="brokerTable">
@@ -426,6 +488,9 @@ def write_html(
           <th data-bk-key="price">Price</th>
           <th data-bk-key="target">Target</th>
           <th data-bk-key="upside_pct">Upside %</th>
+          <th data-bk-key="trailing_pe">P/E</th>
+          <th data-bk-key="forward_pe">Fwd P/E</th>
+          <th data-bk-key="market_cap">Mkt Cap</th>
         </tr>
       </thead>
       <tbody id="brokerBody"></tbody>
@@ -491,6 +556,7 @@ let bkSortKey = 'date';
 let bkSortDir = 'desc';
 let activeBroker = ((DATA.broker_panels || [])[0] || {{}}).slug || 'morgan_stanley';
 let expanded = new Set();
+let brokerExpanded = new Set(); // keys: `${{slug}}::${{ticker}}`
 
 function filtered() {{
   const q = document.getElementById('search').value.trim().toLowerCase();
@@ -530,6 +596,44 @@ function sortedRows() {{
   return rows;
 }}
 
+function nextEarningsNote(chart) {{
+  const next = chart && chart.next_earnings;
+  if (!next) return '';
+  const asOf = String((DATA && DATA.iso_timestamp) || '').slice(0, 10)
+    || new Date().toISOString().slice(0, 10);
+  const a = Date.parse(asOf + 'T00:00:00');
+  const b = Date.parse(String(next).slice(0, 10) + 'T00:00:00');
+  if (Number.isNaN(a) || Number.isNaN(b)) return ` · next ER ${{next}}`;
+  const days = Math.round((b - a) / 86400000);
+  if (days < 0) return '';
+  if (days === 0) return ` · earnings today (${{next}})`;
+  if (days === 1) return ` · next ER in 1 day (${{next}})`;
+  return ` · next ER in ${{days}} days (${{next}})`;
+}}
+
+function chartBlock(t, canvasId) {{
+  const c = (t && t.chart) || {{}};
+  const nP = (c.prices || []).length;
+  const nT = (c.targets || []).length;
+  const nE = (c.earnings || []).length;
+  if (!t) {{
+    return `<div class="muted" style="margin-bottom:12px">No chart — no price data for this ticker yet.</div>`;
+  }}
+  if (!nP && !nT) {{
+    return `<div class="muted" style="margin-bottom:12px">No price/target history yet for this ticker.</div>`;
+  }}
+  const id = canvasId || `chart-${{t.ticker}}`;
+  const erNote = nextEarningsNote(c);
+  const sub = t._firmOnly
+    ? `Weekly close · green = this firm’s target · orange dashed = past earnings (${{nE}})${{erNote}}`
+    : `Weekly close · green = consensus target · orange dashed = past earnings (${{nE}})${{erNote}}`;
+  return `<div style="margin-bottom:12px">
+    <div class="detail-chart-title">Price vs ${{t._firmOnly ? 'firm target' : 'consensus target'}}</div>
+    <div class="detail-chart-sub">${{sub}}</div>
+    <div class="detail-chart-wrap"><canvas id="${{id}}" data-ticker="${{t.ticker}}"></canvas></div>
+  </div>`;
+}}
+
 function firmBlock(t) {{
   const firms = Object.values(t.firm_targets || {{}});
   if (!firms.length) return '';
@@ -557,9 +661,10 @@ function firmBlock(t) {{
 function analystTable(t) {{
   const rows = t.fmp_analysts || [];
   const meta = `<span class="muted"> · FMP consensus ${{fmt.money(t.fmp_latest_target)}} (hi ${{fmt.money(t.fmp_target_high)}} / lo ${{fmt.money(t.fmp_target_low)}}) · 52W ${{fmt.money(t.fifty_two_week_low)}} – ${{fmt.money(t.fifty_two_week_high)}} · β ${{fmt.num(t.beta)}}</span>`;
+  const chart = chartBlock(t);
   const firms = firmBlock(t);
   if (!rows.length) {{
-    return `<div>${{firms}}<strong>FMP detail</strong>${{meta}}<div class="muted" style="margin-top:8px">No firm-level FMP rows for this ticker (budget/plan limit).</div></div>`;
+    return `<div>${{chart}}${{firms}}<strong>FMP detail</strong>${{meta}}<div class="muted" style="margin-top:8px">No firm-level FMP rows for this ticker (budget/plan limit).</div></div>`;
   }}
   const isGrades = rows[0].source === 'grades';
   const title = isGrades
@@ -577,7 +682,7 @@ function analystTable(t) {{
       <td>${{a.news_url ? `<a href="${{a.news_url}}" target="_blank" rel="noopener">${{a.news_title || 'link'}}</a>` : (a.news_title || '—')}}</td>
     </tr>`;
   }}).join('');
-  return `<div>${{firms}}<strong>${{title}}</strong>${{meta}}
+  return `<div>${{chart}}${{firms}}<strong>${{title}}</strong>${{meta}}
     <table class="analysts">
       <thead><tr><th>Firm</th><th>Analyst</th><th>Target</th><th>Date</th><th>Rating</th><th>News</th></tr></thead>
       <tbody>${{body}}</tbody>
@@ -585,7 +690,173 @@ function analystTable(t) {{
   </div>`;
 }}
 
+const detailCharts = {{}};
+
+function destroyDetailChart(key) {{
+  if (detailCharts[key]) {{
+    detailCharts[key].destroy();
+    delete detailCharts[key];
+  }}
+}}
+
+function buildAlignedSeries(prices, targets) {{
+  // Axis = price bars + target snapshot dates only (earnings never stretch the timeline)
+  const dateSet = new Set();
+  (prices || []).forEach(p => dateSet.add(p.date));
+  (targets || []).forEach(t => {{ if (t && t.date) dateSet.add(t.date); }});
+  const labels = Array.from(dateSet).sort();
+  const priceMap = Object.fromEntries((prices || []).map(p => [p.date, p.close]));
+  const priceData = labels.map(d => (priceMap[d] != null ? priceMap[d] : null));
+
+  const sortedT = (targets || []).slice().sort((a, b) => String(a.date).localeCompare(String(b.date)));
+  const firstTarget = sortedT.length ? sortedT[0].target : null;
+  let i = 0;
+  let cur = null;
+  const targetData = labels.map(d => {{
+    while (i < sortedT.length && sortedT[i].date <= d) {{
+      cur = sortedT[i].target;
+      i += 1;
+    }}
+    // Before first snapshot: still show earliest known consensus as a reference line
+    return cur != null ? cur : firstTarget;
+  }});
+
+  return {{ labels, priceData, targetData }};
+}}
+
+function mapEarningsAnnotations(prices, earnings, maxGapDays = 10) {{
+  // Snap ER to nearest weekly price label; ignore dates after the last price bar
+  if (!(prices || []).length) return [];
+  const start = prices[0].date;
+  const end = prices[prices.length - 1].date;
+  const priceDates = prices.map(p => p.date);
+  const out = [];
+  const used = new Set();
+  (earnings || []).forEach(d => {{
+    if (!d || d < start || d > end) return;
+    const tEarn = Date.parse(d);
+    if (Number.isNaN(tEarn)) return;
+    let best = priceDates[0];
+    let bestDiff = Infinity;
+    priceDates.forEach(l => {{
+      const diff = Math.abs(Date.parse(l) - tEarn);
+      if (diff < bestDiff) {{ bestDiff = diff; best = l; }}
+    }});
+    if (bestDiff > maxGapDays * 86400000) return;
+    if (used.has(best)) return;
+    used.add(best);
+    out.push({{ date: d, label: best }});
+  }});
+  return out;
+}}
+
+function renderDetailChart(ticker, canvasId, chartSource) {{
+  const chartKey = canvasId || ticker;
+  const t = chartSource || DATA.tickers.find(x => x.ticker === ticker);
+  if (!t) return;
+  const canvas = document.getElementById(canvasId || `chart-${{ticker}}`);
+  if (!canvas) return;
+  destroyDetailChart(chartKey);
+
+  const c = t.chart || {{}};
+  const prices = c.prices || [];
+  const targets = c.targets || [];
+  const earnMarks = mapEarningsAnnotations(prices, c.earnings || []);
+  if (!prices.length && !targets.length) return;
+
+  const {{ labels, priceData, targetData }} = buildAlignedSeries(prices, targets);
+  const hasTarget = targetData.some(v => v != null);
+
+  const annotations = {{}};
+  earnMarks.forEach((m, idx) => {{
+    annotations[`e${{idx}}`] = {{
+      type: 'line',
+      xMin: m.label,
+      xMax: m.label,
+      borderColor: 'rgba(249, 115, 22, 0.85)',
+      borderWidth: 1.5,
+      borderDash: [4, 3],
+      label: {{
+        display: true,
+        content: 'ER',
+        position: 'start',
+        backgroundColor: 'rgba(249, 115, 22, 0.85)',
+        color: '#111',
+        font: {{ size: 9, weight: 'bold' }},
+      }},
+    }};
+  }});
+
+  const earnLabels = new Set(earnMarks.map(m => m.label));
+  const earnDates = new Set(earnMarks.map(m => m.date));
+
+  detailCharts[chartKey] = new Chart(canvas, {{
+    type: 'line',
+    data: {{
+      labels,
+      datasets: [
+        {{
+          label: 'Price',
+          data: priceData,
+          borderColor: '#4f7ef8',
+          backgroundColor: 'rgba(79,126,248,0.12)',
+          fill: true,
+          tension: 0.15,
+          pointRadius: 0,
+          borderWidth: 2,
+          spanGaps: true,
+        }},
+        {{
+          label: 'Consensus target',
+          data: hasTarget ? targetData : [],
+          borderColor: '#22c55e',
+          backgroundColor: 'transparent',
+          fill: false,
+          tension: 0,
+          stepped: 'before',
+          pointRadius: targets.length <= 12 ? 3 : 0,
+          borderWidth: 2,
+          spanGaps: true,
+        }},
+      ],
+    }},
+    options: {{
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: {{ mode: 'index', intersect: false }},
+      plugins: {{
+        legend: {{
+          labels: {{ color: '#94a3b8', boxWidth: 12, font: {{ size: 11 }} }},
+        }},
+        annotation: {{ annotations }},
+        tooltip: {{
+          callbacks: {{
+            afterBody(items) {{
+              const x = items[0] && items[0].label;
+              if (x && earnLabels.has(x)) return ['Earnings report'];
+              return [];
+            }},
+          }},
+        }},
+      }},
+      scales: {{
+        x: {{
+          ticks: {{ color: '#64748b', maxTicksLimit: 8, font: {{ size: 10 }} }},
+          grid: {{ color: '#2e3250' }},
+        }},
+        y: {{
+          ticks: {{ color: '#64748b', font: {{ size: 10 }} }},
+          grid: {{ color: '#2e3250' }},
+        }},
+      }},
+    }},
+  }});
+}}
+
 function renderTable() {{
+  Object.keys(detailCharts).forEach(k => {{
+    if (!String(k).startsWith('bk-chart-')) destroyDetailChart(k);
+  }});
   const tbody = document.getElementById('tbody');
   const rows = sortedRows();
   document.querySelectorAll('#mainTable th[data-key]').forEach(th => {{
@@ -624,6 +895,11 @@ function renderTable() {{
       <td colspan="16">${{analystTable(t)}}</td>
     </tr>`;
   }}).join('');
+
+  // Re-draw charts for rows that stay expanded after filter/sort
+  expanded.forEach(ticker => {{
+    requestAnimationFrame(() => renderDetailChart(ticker));
+  }});
 }}
 
 function currentBrokerPanel() {{
@@ -638,9 +914,66 @@ function renderBrokerTabs() {{
   ).join('');
 }}
 
+function tickerRow(ticker) {{
+  return (DATA.tickers || []).find(x => x.ticker === ticker) || null;
+}}
+
+function firmChartKey(r, brokerSlug) {{
+  const ccy = String((r && (r.price_currency || r.target_currency)) || '').toUpperCase();
+  if (ccy === 'CAD' || brokerSlug === 'desjardins') {{
+    return `${{(r && r.ticker) || ''}}::CAD`;
+  }}
+  return (r && r.ticker) || '';
+}}
+
+function chartForBrokerPick(r, brokerSlug) {{
+  const ccy = String((r && (r.price_currency || r.target_currency)) || '').toUpperCase();
+  const isCad = ccy === 'CAD' || brokerSlug === 'desjardins';
+  // Universe charts are US listings — don't use them for CAD collisions (e.g. H)
+  if (!isCad) {{
+    const uni = tickerRow(r.ticker);
+    if (uni) return uni;
+  }}
+  const fcMap = DATA.firm_charts || {{}};
+  const key = firmChartKey(r, brokerSlug);
+  let fc = fcMap[key] || (!isCad ? fcMap[r.ticker] : null) || (isCad ? fcMap[r.ticker] : null);
+  // If CAD alias missing, try bare only when it was stored as CAD-only
+  if (!fc && isCad && fcMap[r.ticker] && fcMap[r.ticker].cad) fc = fcMap[r.ticker];
+  if (!fc) return null;
+  const date = String(r.date || '').slice(0, 10);
+  const targets = (r.target != null && !Number.isNaN(Number(r.target)))
+    ? [{{ date: date || ((fc.prices || []).slice(-1)[0] || {{}}).date || '', target: Number(r.target) }}].filter(p => p.date)
+    : (fc.targets || []);
+  const useTargets = targets.length ? targets : (fc.targets || []);
+  return {{
+    ticker: r.ticker,
+    name: r.name,
+    _firmOnly: true,
+    chart: {{
+      prices: fc.prices || [],
+      targets: useTargets,
+      earnings: fc.earnings || [],
+      next_earnings: fc.next_earnings || null,
+    }},
+  }};
+}}
+
+function brokerPickRow(key) {{
+  const panel = currentBrokerPanel();
+  // key format is `${{slug}}::${{ticker}}` (ticker may contain dots, not ::)
+  const parts = key.split('::');
+  const tk = parts.slice(1).join('::');
+  return ((panel && panel.picks) || []).find(p => p.ticker === tk) || {{ ticker: tk }};
+}}
+
 function renderBrokerPanel() {{
+  // Destroy prior broker detail charts
+  Object.keys(detailCharts).forEach(k => {{
+    if (String(k).startsWith('bk-chart-')) destroyDetailChart(k);
+  }});
   renderBrokerTabs();
   const panel = currentBrokerPanel();
+  const slug = (panel && panel.slug) || activeBroker;
   const rows = ((panel && panel.picks) || []).slice().sort((a, b) => {{
     const av = a[bkSortKey], bv = b[bkSortKey];
     const aNull = av === null || av === undefined || av === '';
@@ -659,7 +992,18 @@ function renderBrokerPanel() {{
     th.classList.remove('sorted-asc', 'sorted-desc');
     if (th.dataset.bkKey === bkSortKey) th.classList.add(bkSortDir === 'asc' ? 'sorted-asc' : 'sorted-desc');
   }});
-  document.getElementById('brokerBody').innerHTML = rows.map(r => `<tr>
+  // Drop expansions for other broker tabs
+  brokerExpanded = new Set([...brokerExpanded].filter(k => k.startsWith(slug + '::')));
+
+  document.getElementById('brokerBody').innerHTML = rows.map(r => {{
+    const key = `${{slug}}::${{r.ticker}}`;
+    const open = brokerExpanded.has(key);
+    const pickChart = chartForBrokerPick(r, slug);
+    const canvasId = `bk-chart-${{slug}}-${{r.ticker}}`.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const detail = open
+      ? `<tr class="detail-row" data-bk-detail="${{key}}"><td colspan="11">${{chartBlock(pickChart, canvasId)}}</td></tr>`
+      : `<tr class="detail-row" data-bk-detail="${{key}}" style="display:none"><td colspan="11"></td></tr>`;
+    return `<tr class="expandable" data-bk-key="${{key}}" data-bk-ticker="${{r.ticker || ''}}" data-bk-slug="${{slug}}">
     <td style="text-align:left">${{r.date || '—'}}</td>
     <td style="text-align:left"><span class="ticker">${{r.ticker || ''}}</span></td>
     <td style="text-align:left">${{r.name || '—'}}</td>
@@ -668,7 +1012,19 @@ function renderBrokerPanel() {{
     <td>${{fmt.money(r.price, r.price_currency)}}</td>
     <td>${{fmt.money(r.target, r.target_currency)}}</td>
     <td>${{fmt.pct(r.upside_pct)}}</td>
-  </tr>`).join('') || '<tr><td colspan="8" class="muted" style="text-align:left">No rows for this broker.</td></tr>';
+    <td>${{fmt.num(r.trailing_pe)}}</td>
+    <td>${{fmt.num(r.forward_pe)}}</td>
+    <td>${{fmt.mcap(r.market_cap)}}</td>
+  </tr>${{detail}}`;
+  }}).join('') || '<tr><td colspan="11" class="muted" style="text-align:left">No rows for this broker.</td></tr>';
+
+  brokerExpanded.forEach(key => {{
+    const [, ticker] = key.split('::');
+    const canvasId = `bk-chart-${{slug}}-${{ticker}}`.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const pick = ((panel && panel.picks) || []).find(p => p.ticker === ticker);
+    const pickChart = chartForBrokerPick(pick || {{ ticker }}, slug);
+    if (pickChart) requestAnimationFrame(() => renderDetailChart(ticker, canvasId, pickChart));
+  }});
 }}
 
 function renderChart() {{
@@ -735,10 +1091,42 @@ document.getElementById('tbody').addEventListener('click', (e) => {{
   const tr = e.target.closest('tr.expandable');
   if (!tr) return;
   const ticker = tr.dataset.ticker;
-  if (expanded.has(ticker)) expanded.delete(ticker);
-  else expanded.add(ticker);
+  if (expanded.has(ticker)) {{
+    expanded.delete(ticker);
+    destroyDetailChart(ticker);
+  }} else {{
+    expanded.add(ticker);
+  }}
   const detail = document.querySelector(`tr[data-detail="${{ticker}}"]`);
   if (detail) detail.style.display = expanded.has(ticker) ? 'table-row' : 'none';
+  if (expanded.has(ticker)) {{
+    requestAnimationFrame(() => renderDetailChart(ticker));
+  }}
+}});
+
+document.getElementById('brokerBody').addEventListener('click', (e) => {{
+  const tr = e.target.closest('tr.expandable');
+  if (!tr) return;
+  const key = tr.dataset.bkKey;
+  const ticker = tr.dataset.bkTicker;
+  const slug = tr.dataset.bkSlug;
+  if (!key || !ticker) return;
+  const canvasId = `bk-chart-${{slug}}-${{ticker}}`.replace(/[^a-zA-Z0-9_-]/g, '_');
+  const detail = document.querySelector(`tr[data-bk-detail="${{key}}"]`);
+  if (brokerExpanded.has(key)) {{
+    brokerExpanded.delete(key);
+    destroyDetailChart(canvasId);
+    if (detail) {{ detail.style.display = 'none'; detail.querySelector('td').innerHTML = ''; }}
+  }} else {{
+    brokerExpanded.add(key);
+    if (detail) {{
+      detail.style.display = 'table-row';
+      const pick = brokerPickRow(key);
+      const pickChart = chartForBrokerPick(pick, slug);
+      detail.querySelector('td').innerHTML = chartBlock(pickChart, canvasId);
+      if (pickChart) requestAnimationFrame(() => renderDetailChart(ticker, canvasId, pickChart));
+    }}
+  }}
 }});
 
 ['search', 'recFilter', 'aboveOnly', 'divOnly', 'positiveOnly', 'firmOnly'].forEach(id => {{
